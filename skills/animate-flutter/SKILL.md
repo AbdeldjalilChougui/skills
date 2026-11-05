@@ -52,6 +52,8 @@ Two failure modes, and the first is worse:
 
 **Tab switches never slide.** Tabs are peers, not a hierarchy — sliding implies depth that isn't there, and the user pays for it dozens of times a session. A `StatefulShellRoute.indexedStack` or an `IndexedStack` swap with no transition; with go_router page builders, `NoTransitionPage`.
 
+**Spatial explanation is the one exception to the 150ms ceiling** in the tens-of-times tier: an item flying to the cart, a row moving into a folder. Under 150ms it explains nothing, so it gets up to 300ms with the strong ease-in-out, moves by transform only, and is skipped entirely under reduced motion. Everything else in that tier stays under 150ms.
+
 If the request fails this gate, say so and don't write it.
 
 ### 2. What is the purpose?
@@ -76,7 +78,7 @@ Walk down; stop at the first that fits.
 | A sheet with detents inside a screen | **`DraggableScrollableSheet`** with `snap: true` and `snapSizes` |
 | Swipe a row away | **`Dismissible`** — velocity-aware out of the box |
 | Header that collapses into a large title | **`SliverAppBar`** / **`CupertinoSliverNavigationBar`** — not a scroll listener resizing a box |
-| An element that carries across screens (thumbnail → detail) | **`Hero`** |
+| An element that carries across screens (thumbnail → detail) | **`Hero`** — a full-screen photo lightbox over a fade route is the one sanctioned custom page route |
 | Pull to refresh | **`RefreshIndicator`** / **`CupertinoSliverRefreshControl`** — hand-roll only when it's a signature interaction |
 | Progress, rings, charts, anything drawn | **`CustomPainter` with `repaint: animation`** — repaints without rebuilding or relaying out |
 | Vector illustration, celebration, empty state | **Lottie or Rive** — for illustration only, never for UI state |
@@ -91,7 +93,7 @@ Flutter's pipeline per frame is build → layout → paint → composite. The ch
 
 - **Opacity and transform are cheap — when you use the transition widgets.** `FadeTransition`, `SlideTransition`, `ScaleTransition` and `RotationTransition` listen to the animation directly: no rebuild, no relayout, only a repaint or a layer update. `Transform` inside an `AnimatedBuilder` is fine too.
 - **Don't animate the `Opacity` widget by rebuilding it.** `Opacity(opacity: controller.value)` in a `setState` loop rebuilds the subtree every frame. Use `FadeTransition`, or `AnimatedOpacity` for state changes.
-- **Size, padding, margin, alignment and constraints are a layout pass** — for that node and everything that depends on it. `AnimatedContainer` changing `height`, `AnimatedPadding`, `AnimatedSize` and `AnimatedAlign` all relayout every frame. Fine for a small leaf on a rare occasion; never in a list, never on a large subtree, never per gesture frame.
+- **Size, padding, margin, alignment and constraints are a layout pass** — for that node and everything that depends on it. `AnimatedContainer` changing `height`, `AnimatedPadding`, `AnimatedSize` and `AnimatedAlign` all relayout every frame. Fine for a small leaf on a rare occasion; never in a list, never on a large subtree, never per gesture frame. A colour- or border-only `AnimatedContainer` on a fixed-size widget is cheap — it only repaints — but a constant `boxShadow` inside an animating `BoxDecoration` is re-rasterized every frame: put the shadow on a static layer underneath.
 - **The one exception: a childless, positioned element** — a tab pill, a progress bar fill. It has nothing below it to relayout, and animating its width keeps the corner radius that `ScaleTransition` along one axis would smear.
 - **Never `scale: 0`.** Start from `0.9–0.97` with opacity 0. Nothing in the real world appears from nothing.
 - **`SlideTransition` offsets are fractions of the child's own size** — `Offset(0, 1)` moves a sheet by its own height whatever its content, the equivalent of `translateY(100%)`.
@@ -174,7 +176,7 @@ Mobile has a sense the web doesn't. Use it sparingly and it becomes the thing th
 
 | Moment | Call |
 | --- | --- |
-| A value ticks past a step — picker, slider detent, segmented control | `HapticFeedback.selectionClick()` |
+| A value ticks past a step — picker, slider detent, segmented control, filter chip, stepper +/− | `HapticFeedback.selectionClick()` |
 | Something snaps home, a sheet detent catches, a drag commits | `HapticFeedback.lightImpact()` |
 | A heavy object lands, a destructive action fires, an operation succeeds | `HapticFeedback.mediumImpact()` |
 | Something failed | `HapticFeedback.heavyImpact()` |
@@ -183,7 +185,7 @@ Core Flutter has no success/error notification haptic; if the distinction matter
 
 Three rules, and they're absolute:
 
-- **Same frame as the visual.** A haptic that lags its animation reads as a glitch, not as feedback. Fire it at the causal moment — the detent catching — not in the animation's completion callback.
+- **Same frame as the visual.** A haptic that lags its animation reads as a glitch, not as feedback. Fire it at the causal moment — the detent catching — not in the animation's completion callback. When the commit waits on the network (order placed, save confirmed), the causal moment is the result's visual landing, not the press.
 - **One per user action.** Never on scroll, never per frame, never on an entrance animation the user didn't cause.
 - **Never the only feedback.** Haptics are off system-wide for many users and silent on much Android hardware. The visual has to stand alone.
 
@@ -215,8 +217,13 @@ Check these first when "the animation just doesn't run", or runs wrong:
 
 - **A controller created in `build`.** It's recreated on every rebuild and restarts from zero. Controllers live in `initState` (or a `late final` field) of a `State` with `SingleTickerProviderStateMixin` / `TickerProviderStateMixin`.
 - **An implicit animation whose value never changes.** `AnimatedOpacity` only animates when the `opacity` you pass differs from the last build — rebuilding with the same value does nothing.
+- **A widget mounted at its end value has no entrance.** A banner built with `opacity: 1` simply appears. Mount it hidden and flip the value on the next frame (`addPostFrameCallback`).
+- **`onEnd` that never fires.** Under reduced motion a slide whose offset stays at zero never animates, so its `onEnd` never runs. Hang cleanup on the animation that always runs — usually the opacity.
+- **`AnimatedSwitcher` keyed by data.** For loading → loaded, key the children by *status*; keyed by the data, every refresh re-animates the whole list.
+- **Curves allocated per frame.** A `CurvedAnimation` created inside `buildTransitions` or `build` allocates every frame and leaks listeners; use a static `CurveTween` with `animation.drive(...)`, or create it once in `initState`.
 - **`AnimatedSwitcher` children without distinct keys.** Two `Text` widgets of the same type are seen as the same widget and swap with no transition. Key them by their content.
 - **`TickerMode` disabled** — a widget inside an offstage route or an inactive tab doesn't tick. That's correct behavior; don't fight it.
+- **Tests that never settle.** A looping skeleton shimmer or an indeterminate spinner makes `pumpAndSettle` time out — pump a fixed duration instead. A delayed reveal (a splash loader after 600ms) needs a cancellable `Timer`, not `Future.delayed`, or the test fails on a pending timer.
 - **Debug mode is not a performance environment.** Judge feel with `flutter run --profile` on a device, with the performance overlay or DevTools' frame chart open.
 
 ## 120fps
@@ -245,7 +252,8 @@ For ready-to-build implementations — press feedback, drag-to-dismiss sheet, sw
 | Animating `BackdropFilter` sigma, `elevation` or `boxShadow` | crossfade a static layer |
 | A controller created in `build`, or never disposed | `initState` + `dispose` |
 | An entrance animation on a `ListView.builder` row | animate the list once on mount, or `AnimatedList` for inserts and removals |
-| A screen transition rebuilt with `PageRouteBuilder` / `CustomTransitionPage` | the platform route and `pageTransitionsTheme` |
+| A screen transition rebuilt with `PageRouteBuilder` / `CustomTransitionPage` | the platform route and `pageTransitionsTheme` (a Hero lightbox is the exception) |
+| Negative letter-spacing on figures | `letterSpacing: 0` on amounts — with bidi marks around a number, negative tracking makes Flutter break the line even with `softWrap: false` |
 | Sliding between tabs | no transition |
 | `Curves.easeIn` on a UI element | `Cubic(0.23, 1, 0.32, 1)` |
 | `scale: 0` entrance | `scale: 0.95` + opacity 0 |

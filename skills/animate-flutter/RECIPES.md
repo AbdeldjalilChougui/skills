@@ -107,7 +107,7 @@ class _PressableScaleState extends State<PressableScale> {
 
 `setState` is fine here — it fires twice per press, not per frame, and the `State` owns nothing but the scale. `HitTestBehavior.opaque` plus the 48dp minimum brings a small icon up to the touch target without growing the visual.
 
-To dress an existing button without stealing its tap, swap the `GestureDetector` for a `Listener` (`onPointerDown` / `onPointerUp` / `onPointerCancel`) — a `Listener` doesn't enter the gesture arena, so the inner button still receives the tap.
+To dress an existing button without stealing its tap, swap the `GestureDetector` for a `Listener` (`onPointerDown` / `onPointerUp` / `onPointerCancel`) — a `Listener` doesn't enter the gesture arena, so the inner button still receives the tap. Give that wrapper its own `enabled` flag: a `Listener` scales a disabled button too, because it never learns the button is disabled. There is no theme-level way to give stock buttons a press scale — `ButtonStyle.backgroundBuilder` can't, since a local `backgroundColor` paints outside it — so wrap them.
 
 ---
 
@@ -468,7 +468,29 @@ MaterialApp.router(
 | A self-contained task the user can abandon | `fullscreenDialog: true` |
 | A short interruption: picker, filter, share | `showModalBottomSheet` / `showCupertinoSheet` |
 | Between tabs | no transition — `StatefulShellRoute.indexedStack`, or `NoTransitionPage` |
-| Reduced motion | fade: `FadeForwardsPageTransitionsBuilder` when `MediaQuery.disableAnimationsOf` |
+| Reduced motion | a plain fade — the wrapping builder below |
+
+Not `FadeForwardsPageTransitionsBuilder` for reduced motion: despite the name it also slides pages 25% sideways. Wrap the platform builder instead — a `PageTransitionsBuilder` (unlike a custom route) keeps the back gestures whenever motion is on:
+
+```dart
+class ReducedMotionAware extends PageTransitionsBuilder {
+  const ReducedMotionAware(this.platform);
+
+  final PageTransitionsBuilder platform;
+  static final _fade = CurveTween(curve: easeOut); // static: no allocation per frame
+
+  @override
+  Widget buildTransitions<T>(PageRoute<T> route, BuildContext context, Animation<double> animation,
+      Animation<double> secondaryAnimation, Widget child) {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      return FadeTransition(opacity: animation.drive(_fade), child: child);
+    }
+    return platform.buildTransitions(route, context, animation, secondaryAnimation, child);
+  }
+}
+
+// builders: {TargetPlatform.iOS: ReducedMotionAware(CupertinoPageTransitionsBuilder()), ...}
+```
 
 `PredictiveBackPageTransitionsBuilder` needs `android:enableOnBackInvokedCallback="true"` on the `<application>` in `AndroidManifest.xml`; without it, Android 14+ shows no back preview.
 
@@ -494,7 +516,7 @@ If the design calls for a custom toast in an `Overlay`, the same rules hold:
 
 - **The 300ms cap holds here too.** A toast is uninvited, so if anything it should be quicker and quieter than motion the user asked for.
 - **It exits the way it entered.** Entering from the bottom and leaving to the side reads as two unrelated elements.
-- **Exit ~20% faster than entry.** Pass a shorter `reverseDuration` to the controller.
+- **Exit ~20% faster than entry.** Pass a shorter `reverseDuration` to the controller; with an implicit animation, pick the duration from the target state: `duration: visible ? 260ms : 210ms`.
 - **Safe area, always.** Position from `MediaQuery.paddingOf(context).bottom + 16`, not `16`, or it sits under the home indicator.
 
 ---
